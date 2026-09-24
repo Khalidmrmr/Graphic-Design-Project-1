@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project 1 - Retro Raster Run</title>
+  <style>
+    :root {
+      --bg: #050510;
+      --panel: #111126;
+      --text: #f4f4ff;
+      --muted: #b9bad4;
+      --accent: #69f0ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #181832 0%, var(--bg) 58%);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      min-height: 100vh;
+    }
+
+    header {
+      width: min(1600px, 96vw);
+      margin: 20px auto 12px auto;
+      padding: 16px 18px;
+      background: rgba(17, 17, 38, 0.94);
+      border: 1px solid #30305a;
+      border-radius: 10px;
+      box-shadow: 0 10px 35px rgba(0, 0, 0, 0.35);
+    }
+
+    header h1 {
+      margin: 0 0 5px 0;
+      font-size: 24px;
+    }
+
+    header p {
+      margin: 4px 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .controls {
+      margin-top: 9px;
+      color: #ffffff;
+    }
+
+    .key {
+      display: inline-block;
+      min-width: 26px;
+      padding: 2px 7px;
+      margin: 1px 2px;
+      border: 1px solid #5a5b82;
+      border-bottom-width: 3px;
+      border-radius: 5px;
+      background: #242445;
+      text-align: center;
+      font-weight: bold;
+      font-size: 13px;
+    }
+
+    #stage {
+      position: relative;
+      width: min(1600px, 96vw);
+      margin: 0 auto 24px auto;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--bg);
+      border: 1px solid #30305a;
+      border-radius: 8px;
+      image-rendering: pixelated;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.45);
+    }
+
+    #hud {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      min-width: 250px;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.62);
+      border: 1px solid rgba(105, 240, 255, 0.35);
+      border-radius: 8px;
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+
+    #message {
+      color: var(--accent);
+      min-height: 20px;
+      margin-top: 4px;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Project 1: Retro Raster Run</h1>
+    <p><strong>Rehman Khalid, Jace Schubert</strong> | Pinhole camera, line rasterization, triangle filling, and z-buffering using Canvas 2D only.</p>
+    <p class="controls">
+      <span class="key">←</span><span class="key">→</span> move left/right &nbsp;
+      <span class="key">↑</span><span class="key">↓</span> move forward/back &nbsp;
+      <span class="key">Space</span> collect nearby crystal &nbsp;
+      <span class="key">R</span> reset &nbsp;
+      <span class="key">1</span> high-res wireframe &nbsp;
+      <span class="key">2</span> 320×200 raster lines &nbsp;
+      <span class="key">3</span> filled triangles
+    </p>
+    <p class="small">Goal: move through the scene and collect the glowing crystal objects. The camera translates in X and Z only and never rotates.</p>
+  </header>
+
+  <div id="stage">
+    <!-- 1600 x 1000 corresponds to a mock 320 x 200 display with 5 x 5 squares. -->
+    <canvas id="canvas" width="1600" height="1000"></canvas>
+    <div id="hud"></div>
+  </div>
+
+<script>
+"use strict";
+
+// ============================================================
+// PROJECT CONSTANTS
+// ============================================================
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+
+const HIGH_W = 1600;
+const HIGH_H = 1000;
+const LOW_W = 320;
+const LOW_H = 200;
+const PIXEL_SIZE = 5;
+const BACKGROUND = "#050510";
+const NEAR_PLANE = 0.20;
+
+// Focal lengths are chosen so the same scene has approximately the same framing
+// in the high-resolution and 320x200 modes.
+const HIGH_FOCAL = 650;
+const LOW_FOCAL = 130;
+
+let renderMode = 1;
+let score = 0;
+let statusMessage = "Collect the cyan crystals with Space.";
+
+const initialCamera = { x: 0, y: 1.2, z: 0 };
+const camera = { ...initialCamera };
+
+// ============================================================
+// FRAMEBUFFERS FOR LEVELS 2 AND 3
+// ============================================================
+const pixelGrid = Array.from(
+  { length: LOW_W },
+  () => Array(LOW_H).fill(BACKGROUND)
+);
+
+const depthBuffer = Array.from(
+  { length: LOW_W },
+  () => Array(LOW_H).fill(Infinity)
+);
+
+// ============================================================
+// BASE MODELS
+// Each model is centered around the origin.
+// Edges are used by Levels 1 and 2.
+// Triangles are used by Level 3.
+// ============================================================
+
+const cubeModel = {
+  name: "Cube",
+  collisionRadius: 1.15,
+  vertices: [
+    [-1,-1,-1], [ 1,-1,-1], [ 1, 1,-1], [-1, 1,-1],
+    [-1,-1, 1], [ 1,-1, 1], [ 1, 1, 1], [-1, 1, 1]
+  ],
+  edges: [
+    [0,1],[1,2],[2,3],[3,0],
+    [4,5],[5,6],[6,7],[7,4],
+    [0,4],[1,5],[2,6],[3,7]
+  ],
+  triangles: [
+    { i:[0,1,2], shade:0.70 }, { i:[0,2,3], shade:0.70 },
+    { i:[4,6,5], shade:1.00 }, { i:[4,7,6], shade:1.00 },
+    { i:[0,4,5], shade:0.58 }, { i:[0,5,1], shade:0.58 },
+    { i:[3,2,6], shade:0.86 }, { i:[3,6,7], shade:0.86 },
+    { i:[1,5,6], shade:0.76 }, { i:[1,6,2], shade:0.76 },
+    { i:[0,3,7], shade:0.48 }, { i:[0,7,4], shade:0.48 }
+  ]
+};
+
+const pyramidModel = {
+  name: "Pyramid",
+  collisionRadius: 1.1,
+  vertices: [
+    [-1,-1,-1], [1,-1,-1], [1,-1,1], [-1,-1,1],
+    [0,1.35,0]
+  ],
+  edges: [
+    [0,1],[1,2],[2,3],[3,0],
+    [0,4],[1,4],[2,4],[3,4]
+  ],
+  triangles: [
+    { i:[0,2,1], shade:0.45 }, { i:[0,3,2], shade:0.45 },
+    { i:[0,1,4], shade:0.66 },
+    { i:[1,2,4], shade:0.92 },
+    { i:[2,3,4], shade:0.78 },
+    { i:[3,0,4], shade:0.56 }
+  ]
+};
+
+const crystalModel = {
+  name: "Crystal",
+  collisionRadius: 0.75,
+  vertices: [
+    [0,1.25,0], [1,0,0], [0,0,1], [-1,0,0], [0,0,-1], [0,-1.25,0]
+  ],
+  edges: [
+    [0,1],[0,2],[0,3],[0,4],
+    [5,1],[5,2],[5,3],[5,4],
+    [1,2],[2,3],[3,4],[4,1]
+  ],
+  triangles: [
+    { i:[0,1,2], shade:1.00 }, { i:[0,2,3], shade:0.86 },
+    { i:[0,3,4], shade:0.72 }, { i:[0,4,1], shade:0.92 },
+    { i:[5,2,1], shade:0.62 }, { i:[5,3,2], shade:0.54 },
+    { i:[5,4,3], shade:0.48 }, { i:[5,1,4], shade:0.58 }
+  ]
+};
+
+// A flat rectangle made from two triangles. This gives the scene a ground plane
+// in filled-triangle mode, and an outline in wireframe modes.
+const groundModel = {
+  name: "Ground",
+  collisionRadius: 0,
+  vertices: [
+    [-12,0,-2], [12,0,-2], [12,0,2], [-12,0,2]
+  ],
+  edges: [[0,1],[1,2],[2,3],[3,0]],
+  triangles: [
+    { i:[0,2,1], shade:0.42 },
+    { i:[0,3,2], shade:0.42 }
+  ]
+};
+
+// SCENE INSTANCES
+// Every instance has a position vector, scale, and color.
+const sceneTemplate = [
+  // Repeated ground segments keep the floor visible as the camera moves forward.
+  ...Array.from({length: 16}, (_, i) => ({
+    model: groundModel,
+    position: {x:0, y:-2.2, z:6 + i*4},
+    scale:1,
+    color: i % 2 === 0 ? "#20243c" : "#1a2034",
+    solid:false
+  })),
+
+  { model: cubeModel, position:{x:-6.0, y:0, z:13}, scale:1.7, color:"#ff5b72", solid:true },
+  { model: cubeModel, position:{x: 6.3, y:0, z:19}, scale:2.1, color:"#9a78ff", solid:true },
+  { model: cubeModel, position:{x:-5.4, y:0, z:34}, scale:2.4, color:"#ff8b52", solid:true },
+  { model: cubeModel, position:{x: 5.7, y:0, z:48}, scale:2.0, color:"#6f8cff", solid:true },
+
+  { model: pyramidModel, position:{x: 5.4, y:-0.2, z:11}, scale:1.8, color:"#ffd166", solid:true },
+  { model: pyramidModel, position:{x:-6.4, y:-0.2, z:25}, scale:2.3, color:"#ffcc4d", solid:true },
+  { model: pyramidModel, position:{x: 3.8, y:-0.2, z:39}, scale:2.5, color:"#f4b942", solid:true },
+  { model: pyramidModel, position:{x:-3.4, y:-0.2, z:56}, scale:2.2, color:"#ffd166", solid:true },
+
+  { model: crystalModel, position:{x: 0.2, y:0.1, z:9.0},  scale:0.85, color:"#5ff6ff", collectible:true, active:true },
+  { model: crystalModel, position:{x:-1.7, y:0.1, z:22.0}, scale:0.90, color:"#5ff6ff", collectible:true, active:true },
+  { model: crystalModel, position:{x: 2.2, y:0.1, z:31.5},  scale:0.80, color:"#5ff6ff", collectible:true, active:true },
+  { model: crystalModel, position:{x:-0.6, y:0.1, z:44.0}, scale:0.95, color:"#5ff6ff", collectible:true, active:true },
+  { model: crystalModel, position:{x: 1.1, y:0.1, z:58.0},  scale:0.85, color:"#5ff6ff", collectible:true, active:true }
+];
+
+let objects = [];
+
+function resetObjects() {
+  objects = sceneTemplate.map(o => ({
+    ...o,
+    position: { ...o.position },
+    active: o.active !== undefined ? o.active : true
+  }));
+}
+
+resetObjects();
+
+// COLOR HELPERS
+function shadeHex(hex, factor) {
+  const clean = hex.replace("#", "");
+  const r = parseInt(clean.substring(0,2), 16);
+  const g = parseInt(clean.substring(2,4), 16);
+  const b = parseInt(clean.substring(4,6), 16);
+  const clamp = n => Math.max(0, Math.min(255, Math.round(n)));
+  return `rgb(${clamp(r*factor)}, ${clamp(g*factor)}, ${clamp(b*factor)})`;
+}
+
+// MODEL -> WORLD -> CAMERA -> SCREEN
+function transformVertex(vertex, object) {
+  return {
+    x: vertex[0] * object.scale + object.position.x,
+    y: vertex[1] * object.scale + object.position.y,
+    z: vertex[2] * object.scale + object.position.z
+  };
+}
+
+function worldToCamera(world) {
+  return {
+    x: world.x - camera.x,
+    y: world.y - camera.y,
+    z: world.z - camera.z
+  };
+}
+
+function projectCameraVertex(v, width, height, focal) {
+  if (v.z <= NEAR_PLANE) return null;
+  return {
+    x: width / 2 + (v.x / v.z) * focal,
+    y: height / 2 - (v.y / v.z) * focal,
+    z: v.z
+  };
+}
+
+function getProjectedObject(object, width, height, focal) {
+  const cameraVertices = object.model.vertices.map(vertex => {
+    const world = transformVertex(vertex, object);
+    return worldToCamera(world);
+  });
+
+  const projectedVertices = cameraVertices.map(v =>
+    projectCameraVertex(v, width, height, focal)
+  );
+
+  return { cameraVertices, projectedVertices };
+}
+
+// LEVEL 1: HIGH-RESOLUTION CANVAS WIREFRAME
+function drawCanvasLine(a, b, color, width=3) {
+  if (!a || !b) return;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.lineWidth = width;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+
+function drawHighResGrid() {
+  // Procedural guide lines on the ground give a stronger sense of motion.
+  const gridColor = "#1f5b68";
+
+  for (let z = 6; z <= 68; z += 4) {
+    const a = projectCameraVertex(worldToCamera({x:-11, y:-2.15, z}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x: 11, y:-2.15, z}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    drawCanvasLine(a, b, gridColor, 1);
+  }
+
+  for (let x = -10; x <= 10; x += 2) {
+    const a = projectCameraVertex(worldToCamera({x, y:-2.15, z:6}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x, y:-2.15, z:68}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    drawCanvasLine(a, b, gridColor, 1);
+  }
+}
+
+function renderHighResWireframe() {
+  clearCanvas();
+  drawHighResGrid();
+
+  for (const object of objects) {
+    if (object.collectible && !object.active) continue;
+
+    const { projectedVertices } = getProjectedObject(
+      object, HIGH_W, HIGH_H, HIGH_FOCAL
+    );
+
+    for (const edge of object.model.edges) {
+      const p1 = projectedVertices[edge[0]];
+      const p2 = projectedVertices[edge[1]];
+      if (!p1 || !p2) continue;
+      drawCanvasLine(p1, p2, object.color, object.collectible ? 5 : 3);
+    }
+  }
+
+  drawCrosshairHighRes();
+}
+
+function drawCrosshairHighRes() {
+  ctx.strokeStyle = "rgba(255,255,255,0.45)";
+  ctx.lineWidth = 2;
+  const cx = HIGH_W/2;
+  const cy = HIGH_H/2;
+  ctx.beginPath();
+  ctx.moveTo(cx-14, cy); ctx.lineTo(cx+14, cy);
+  ctx.moveTo(cx, cy-14); ctx.lineTo(cx, cy+14);
+  ctx.stroke();
+}
+
+// LEVEL 2: 320x200 CUSTOM LINE RASTERIZATION
+function clearPixelGrid() {
+  for (let x = 0; x < LOW_W; x++) {
+    pixelGrid[x].fill(BACKGROUND);
+  }
+}
+
+function setPixelColor(x, y, color) {
+  x = Math.round(x);
+  y = Math.round(y);
+  if (x < 0 || x >= LOW_W || y < 0 || y >= LOW_H) return;
+  pixelGrid[x][y] = color;
+}
+
+// Generalized incremental line rasterizer. It works for positive/negative,
+// steep/shallow, horizontal, and vertical lines.
+function drawPixelLine(x1, y1, x2, y2, color) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+
+  if (steps === 0) {
+    setPixelColor(x1, y1, color);
+    return;
+  }
+
+  const xStep = dx / steps;
+  const yStep = dy / steps;
+  let x = x1;
+  let y = y1;
+
+  for (let i = 0; i <= Math.ceil(steps); i++) {
+    setPixelColor(x, y, color);
+    x += xStep;
+    y += yStep;
+  }
+}
+
+function drawLowResGrid() {
+  const gridColor = "#1f5b68";
+  for (let z = 6; z <= 68; z += 4) {
+    const a = projectCameraVertex(worldToCamera({x:-11, y:-2.15, z}), LOW_W, LOW_H, LOW_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x: 11, y:-2.15, z}), LOW_W, LOW_H, LOW_FOCAL);
+    if (a && b) drawPixelLine(a.x,a.y,b.x,b.y,gridColor);
+  }
+
+  for (let x = -10; x <= 10; x += 2) {
+    const a = projectCameraVertex(worldToCamera({x, y:-2.15, z:6}), LOW_W, LOW_H, LOW_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x, y:-2.15, z:68}), LOW_W, LOW_H, LOW_FOCAL);
+    if (a && b) drawPixelLine(a.x,a.y,b.x,b.y,gridColor);
+  }
+}
+
+function renderPixelWireframe() {
+  clearPixelGrid();
+  drawLowResGrid();
+
+  for (const object of objects) {
+    if (object.collectible && !object.active) continue;
+
+    const { projectedVertices } = getProjectedObject(
+      object, LOW_W, LOW_H, LOW_FOCAL
+    );
+
+    for (const edge of object.model.edges) {
+      const p1 = projectedVertices[edge[0]];
+      const p2 = projectedVertices[edge[1]];
+      if (!p1 || !p2) continue;
+      drawPixelLine(p1.x, p1.y, p2.x, p2.y, object.color);
+    }
+  }
+
+  drawLowResCrosshair();
+  drawPixelGrid();
+}
+
+function drawLowResCrosshair() {
+  const cx = Math.floor(LOW_W/2);
+  const cy = Math.floor(LOW_H/2);
+  for (let d=-3; d<=3; d++) {
+    setPixelColor(cx+d, cy, "#ffffff");
+    setPixelColor(cx, cy+d, "#ffffff");
+  }
+}
+
+function drawPixelGrid() {
+  ctx.clearRect(0, 0, HIGH_W, HIGH_H);
+  ctx.fillStyle = BACKGROUND;
+  ctx.fillRect(0, 0, HIGH_W, HIGH_H);
+
+  // Each virtual 320x200 pixel becomes a 5x5 Canvas rectangle.
+  for (let y = 0; y < LOW_H; y++) {
+    for (let x = 0; x < LOW_W; x++) {
+      const color = pixelGrid[x][y];
+      if (color === BACKGROUND) continue;
+      ctx.fillStyle = color;
+      ctx.fillRect(x * PIXEL_SIZE, y * PIXEL_SIZE, PIXEL_SIZE, PIXEL_SIZE);
+    }
+  }
+}
+
+// LEVEL 3: TRIANGLE RASTERIZATION + Z BUFFER
+function clearDepthBuffer() {
+  for (let x = 0; x < LOW_W; x++) {
+    depthBuffer[x].fill(Infinity);
+  }
+}
+
+function edgeFunction(a, b, p) {
+  return (p.x - a.x) * (b.y - a.y) -
+         (p.y - a.y) * (b.x - a.x);
+}
+
+function barycentric(p, a, b, c) {
+  const area = edgeFunction(a, b, c);
+  if (Math.abs(area) < 1e-8) return null;
+
+  const alpha = edgeFunction(b, c, p) / edgeFunction(b, c, a);
+  const beta  = edgeFunction(c, a, p) / edgeFunction(c, a, b);
+  const gamma = 1 - alpha - beta;
+
+  return { alpha, beta, gamma };
+}
+
+function rasterizeTriangle(a, b, c, color) {
+  // Bounding box of the projected triangle, clipped to the 320x200 display.
+  const minX = Math.max(0, Math.floor(Math.min(a.x, b.x, c.x)));
+  const maxX = Math.min(LOW_W - 1, Math.ceil(Math.max(a.x, b.x, c.x)));
+  const minY = Math.max(0, Math.floor(Math.min(a.y, b.y, c.y)));
+  const maxY = Math.min(LOW_H - 1, Math.ceil(Math.max(a.y, b.y, c.y)));
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      // Sample at the virtual pixel center.
+      const p = { x: x + 0.5, y: y + 0.5 };
+      const bc = barycentric(p, a, b, c);
+      if (!bc) continue;
+
+      const epsilon = -0.00001;
+      if (bc.alpha >= epsilon && bc.beta >= epsilon && bc.gamma >= epsilon) {
+        // Interpolate camera-space depth using the barycentric weights.
+        const z = bc.alpha * a.z + bc.beta * b.z + bc.gamma * c.z;
+
+        if (z < depthBuffer[x][y]) {
+          depthBuffer[x][y] = z;
+          pixelGrid[x][y] = color;
+        }
+      }
+    }
+  }
+}
+
+function renderFilledTriangles() {
+  clearPixelGrid();
+  clearDepthBuffer();
+
+  for (const object of objects) {
+    if (object.collectible && !object.active) continue;
+
+    const { projectedVertices } = getProjectedObject(
+      object, LOW_W, LOW_H, LOW_FOCAL
+    );
+
+    for (const tri of object.model.triangles) {
+      const a = projectedVertices[tri.i[0]];
+      const b = projectedVertices[tri.i[1]];
+      const c = projectedVertices[tri.i[2]];
+
+      // Simple near-plane handling: triangles touching/behind the camera are skipped.
+      if (!a || !b || !c) continue;
+
+      const surfaceColor = shadeHex(object.color, tri.shade ?? 1);
+      rasterizeTriangle(a, b, c, surfaceColor);
+    }
+  }
+
+  drawLowResCrosshair();
+  drawPixelGrid();
+}
+
+// CAMERA MOVEMENT, COLLISION, INTERACTION, RESET
+function isCameraBlocked(candidateX, candidateZ) {
+  for (const object of objects) {
+    if (!object.solid || object.model === groundModel) continue;
+
+    const radius = object.model.collisionRadius * object.scale + 0.45;
+    const dx = candidateX - object.position.x;
+    const dz = candidateZ - object.position.z;
+
+    if (dx*dx + dz*dz < radius*radius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function tryMove(dx, dz) {
+  const candidateX = Math.max(-10.5, Math.min(10.5, camera.x + dx));
+  const candidateZ = Math.max(-4, Math.min(64, camera.z + dz));
+
+  if (!isCameraBlocked(candidateX, candidateZ)) {
+    camera.x = candidateX;
+    camera.z = candidateZ;
+    statusMessage = "";
+  } else {
+    statusMessage = "Obstacle ahead. Move around it.";
+  }
+}
+
+function collectCrystal() {
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const object of objects) {
+    if (!object.collectible || !object.active) continue;
+    const dx = object.position.x - camera.x;
+    const dz = object.position.z - camera.z;
+    const distance = Math.hypot(dx, dz);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = object;
+    }
+  }
+
+  if (best && bestDistance <= 3.2) {
+    best.active = false;
+    score++;
+    statusMessage = `Crystal collected! ${score}/5`;
+
+    if (score === 5) {
+      statusMessage = "All crystals collected! Press R to restart.";
+    }
+  } else {
+    statusMessage = "No crystal close enough. Move nearer first.";
+  }
+}
+
+function resetScene() {
+  camera.x = initialCamera.x;
+  camera.y = initialCamera.y;
+  camera.z = initialCamera.z;
+  score = 0;
+  resetObjects();
+  statusMessage = "Scene reset. Collect the cyan crystals with Space.";
+}
+
+// DRAW / HUD
+function clearCanvas() {
+  ctx.clearRect(0,0,HIGH_W,HIGH_H);
+  ctx.fillStyle = BACKGROUND;
+  ctx.fillRect(0,0,HIGH_W,HIGH_H);
+}
+
+function modeName() {
+  if (renderMode === 1) return "Level 1: High-resolution wireframe";
+  if (renderMode === 2) return "Level 2: 320×200 custom rasterized lines";
+  return "Level 3: Filled triangles + z-buffer";
+}
+
+function updateHud() {
+  hud.innerHTML = `
+    <strong>${modeName()}</strong><br>
+    Camera: x=${camera.x.toFixed(1)}, y=${camera.y.toFixed(1)}, z=${camera.z.toFixed(1)}<br>
+    Crystals: ${score}/5
+    <div id="message">${statusMessage || "&nbsp;"}</div>
+  `;
+}
+
+function draw() {
+  if (renderMode === 1) {
+    renderHighResWireframe();
+  } else if (renderMode === 2) {
+    renderPixelWireframe();
+  } else {
+    renderFilledTriangles();
+  }
+  updateHud();
+}
+
+// KEYBOARD INPUT
+document.addEventListener("keydown", event => {
+  const key = event.key;
+
+  if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," "].includes(key)) {
+    event.preventDefault();
+  }
+
+  switch (key) {
+    case "ArrowLeft":
+      tryMove(-0.65, 0);
+      break;
+    case "ArrowRight":
+      tryMove(0.65, 0);
+      break;
+    case "ArrowUp":
+      tryMove(0, 0.75);
+      break;
+    case "ArrowDown":
+      tryMove(0, -0.75);
+      break;
+    case " ":
+      collectCrystal();
+      break;
+    case "r":
+    case "R":
+      resetScene();
+      break;
+    case "1":
+      renderMode = 1;
+      statusMessage = "Switched to Canvas line rendering.";
+      break;
+    case "2":
+      renderMode = 2;
+      statusMessage = "Switched to custom 320×200 line rasterization.";
+      break;
+    case "3":
+      renderMode = 3;
+      statusMessage = "Switched to triangle rasterization with depth testing.";
+      break;
+    default:
+      return;
+  }
+
+  draw();
+});
+
+// Initial frame.
+draw();
+</script>
+</body>
+</html>
