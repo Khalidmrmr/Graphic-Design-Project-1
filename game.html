@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project 1 - Retro Raster Run: Infinite</title>
+  <style>
+    :root {
+      --bg: #050510;
+      --panel: #111126;
+      --text: #f4f4ff;
+      --muted: #b9bad4;
+      --accent: #69f0ff;
+      --hazard: #ff4d4d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #181832 0%, var(--bg) 58%);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      min-height: 100vh;
+    }
+    header {
+      width: min(1600px, 96vw);
+      margin: 20px auto 12px auto;
+      padding: 16px 18px;
+      background: rgba(17, 17, 38, 0.94);
+      border: 1px solid #30305a;
+      border-radius: 10px;
+      box-shadow: 0 10px 35px rgba(0, 0, 0, 0.35);
+    }
+    header h1 { margin: 0 0 5px 0; font-size: 24px; }
+    header p { margin: 4px 0; color: var(--muted); line-height: 1.45; }
+    .controls { margin-top: 9px; color: #ffffff; }
+    .key {
+      display: inline-block;
+      min-width: 26px;
+      padding: 2px 7px;
+      margin: 1px 2px;
+      border: 1px solid #5a5b82;
+      border-bottom-width: 3px;
+      border-radius: 5px;
+      background: #242445;
+      text-align: center;
+      font-weight: bold;
+      font-size: 13px;
+    }
+    #stage {
+      position: relative;
+      width: min(1600px, 96vw);
+      margin: 0 auto 24px auto;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--bg);
+      border: 1px solid #30305a;
+      border-radius: 8px;
+      image-rendering: pixelated;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.45);
+    }
+    #hud {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      min-width: 250px;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.62);
+      border: 1px solid rgba(105, 240, 255, 0.35);
+      border-radius: 8px;
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+    .oxy-bar-container {
+      width: 100%;
+      height: 8px;
+      background: #222;
+      border-radius: 4px;
+      margin: 5px 0;
+      overflow: hidden;
+      border: 1px solid #444;
+    }
+    #oxy-fill {
+      height: 100%;
+      width: 100%;
+      background: #00ff95;
+      transition: width 0.1s linear;
+    }
+    #message { color: var(--accent); min-height: 20px; margin-top: 4px; }
+    .hazard-msg { color: var(--hazard) !important; font-weight: bold; }
+    .diff-tag { font-size: 11px; color: #aaa; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Project 1: Retro Raster Run (Infinite)</h1>
+    <p><strong>Rehman Khalid, Jace Schubert</strong> | Infinite procedural generation and oxygen management.</p>
+    <p class="controls">
+      <span class="key">←</span><span class="key">→</span> move &nbsp;
+      <span class="key">↑</span><span class="key">↓</span> move &nbsp;
+      <span class="key">Space</span> collect crystal &nbsp;
+      <span class="key">R</span> reset &nbsp;
+      <span class="key">1</span> <span class="key">2</span> <span class="key">3</span> render modes
+    </p>
+  </header>
+  <div id="stage">
+    <canvas id="canvas" width="1600" height="1000"></canvas>
+    <div id="hud"></div>
+  </div>
+<script>
+"use strict";
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const HIGH_W = 1600, HIGH_H = 1000;
+const LOW_W = 320, LOW_H = 200;
+const PIXEL_SIZE = 5;
+const BACKGROUND = "#050510";
+const NEAR_PLANE = 0.20;
+const HIGH_FOCAL = 650, LOW_FOCAL = 130;
+let renderMode = 1;
+let oxygen = 100;
+let statusMessage = "Collect crystals to stay alive!";
+let isHazard = false;
+let gameOver = false;
+// ANIMATION & PROCEDURAL STATE
+let lastTime = 0, time = 0, droneCooldown = 0, lastSpawnZ = 10, lastDroneZ = 0;
+const camera = { x: 0, y: 1.2, z: 0 };
+const pixelGrid = Array.from({ length: LOW_W }, () => Array(LOW_H).fill(BACKGROUND));
+const depthBuffer = Array.from({ length: LOW_W }, () => Array(LOW_H).fill(Infinity));
+// ============================================================
+// MODELS & COLORS
+// ============================================================
+const CUBE_COLORS = ["#ff5b72", "#9a78ff", "#ff8b52", "#6f8cff", "#00f5d4", "#9b5de5"];
+const PYRAMID_COLORS = ["#ffd166", "#ffcc4d", "#f4b942", "#f15bb5", "#fee440"];
+const cubeModel = { collisionRadius: 1.15, vertices: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]], edges: [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]], triangles: [{ i:[0,1,2], shade:0.7 }, { i:[0,2,3], shade:0.7 }, { i:[4,6,5], shade:1.0 }, { i:[4,7,6], shade:1.0 }, { i:[0,4,5], shade:0.58 }, { i:[0,5,1], shade:0.58 }, { i:[3,2,6], shade:0.86 }, { i:[3,6,7], shade:0.86 }, { i:[1,5,6], shade:0.76 }, { i:[1,6,2], shade:0.76 }, { i:[0,3,7], shade:0.48 }, { i:[0,7,4], shade:0.48 }] };
+const pyramidModel = { collisionRadius: 1.1, vertices: [[-1,-1,-1], [1,-1,-1], [1,-1,1], [-1,-1,1], [0,1.35,0]], edges: [[0,1],[1,2],[2,3],[3,0],[0,4],[1,4],[2,4],[3,4]], triangles: [{ i:[0,2,1], shade:0.45 }, { i:[0,3,2], shade:0.45 }, { i:[0,1,4], shade:0.66 }, { i:[1,2,4], shade:0.92 }, { i:[2,3,4], shade:0.78 }, { i:[3,0,4], shade:0.56 }] };
+const crystalModel = { collisionRadius: 0.75, vertices: [[0,1.25,0], [1,0,0], [0,0,1], [-1,0,0], [0,0,-1], [0,-1.25,0]], edges: [[0,1],[0,2],[0,3],[0,4],[5,1],[5,2],[5,3],[5,4],[1,2],[2,3],[3,4],[4,1]], triangles: [{ i:[0,1,2], shade:1.0 }, { i:[0,2,3], shade:0.86 }, { i:[0,3,4], shade:0.72 }, { i:[0,4,1], shade:0.92 }, { i:[5,2,1], shade:0.62 }, { i:[5,3,2], shade:0.54 }, { i:[5,4,3], shade:0.48 }, { i:[5,1,4], shade:0.58 }] };
+const droneModel = { collisionRadius: 1.0, vertices: [[0,1.2,0], [1,0,0], [0,0,1], [-1,0,0], [0,0,-1], [0,-1.2,0]], edges: [[0,1],[0,2],[0,3],[0,4],[5,1],[5,2],[5,3],[5,4],[1,2],[2,3],[3,4],[4,1]], triangles: [{ i:[0,1,2], shade:1.0 }, { i:[0,2,3], shade:0.8 }, { i:[0,3,4], shade:0.6 }, { i:[0,4,1], shade:0.9 }, { i:[5,2,1], shade:0.7 }, { i:[5,3,2], shade:0.5 }, { i:[5,4,3], shade:0.4 }, { i:[5,1,4], shade:0.6 }] };
+let objects = [];
+function resetScene() {
+  objects = [];
+  lastSpawnZ = 10;
+  lastDroneZ = 0;
+  oxygen = 100;
+  gameOver = false;
+  camera.x = 0; camera.z = 0;
+  statusMessage = "System Rebooted. Good luck.";
+}
+// HELPERS
+function shadeHex(hex, factor) {
+  const clean = hex.replace("#", ""), r = parseInt(clean.substring(0,2), 16), g = parseInt(clean.substring(2,4), 16), b = parseInt(clean.substring(4,6), 16);
+  const clamp = n => Math.max(0, Math.min(255, Math.round(n)));
+  return `rgb(${clamp(r*factor)}, ${clamp(g*factor)}, ${clamp(b*factor)})`;
+}
+function transformVertex(vertex, object) {
+  let vx = vertex[0], vy = vertex[1], vz = vertex[2];
+  if (object.collectible && object.active) {
+    const angle = time * 0.0025, s = Math.sin(angle), c = Math.cos(angle);
+    const rx = vx * c - vz * s, rz = vx * s + vz * c;
+    vx = rx; vz = rz; vy += Math.sin(time * 0.004) * 0.25;
+  }
+  return { x: vx * object.scale + object.position.x, y: vy * object.scale + object.position.y, z: vz * object.scale + object.position.z };
+}
+function worldToCamera(world) { return { x: world.x - camera.x, y: world.y - camera.y, z: world.z - camera.z }; }
+function projectCameraVertex(v, width, height, focal) {
+  if (v.z <= NEAR_PLANE) return null;
+  return { x: width / 2 + (v.x / v.z) * focal, y: height / 2 - (v.y / v.z) * focal, z: v.z };
+}
+function getProjectedObject(object, width, height, focal) {
+  const cameraVertices = object.model.vertices.map(v => worldToCamera(transformVertex(v, object)));
+  const projectedVertices = cameraVertices.map(v => projectCameraVertex(v, width, height, focal));
+  return { cameraVertices, projectedVertices };
+}
+// RENDERERS
+function drawCanvasLine(a, b, color, width=3) {
+  if (!a || !b) return;
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+  ctx.lineWidth = width; ctx.strokeStyle = color; ctx.stroke();
+}
+function drawHighResGrid() {
+  const gridColor = "#1f5b68";
+  const startZ = Math.floor(camera.z / 4) * 4;
+  
+  // Horizontal lines
+  for (let z = startZ; z <= camera.z + 72; z += 4) {
+    const a = projectCameraVertex(worldToCamera({x:-11, y:-2.15, z}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x: 11, y:-2.15, z}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    drawCanvasLine(a, b, gridColor, 1);
+  }
+  
+  // Vertical lines - Fixed: Start slightly ahead of camera to avoid clipping
+  for (let x = -10; x <= 10; x += 2) {
+    const a = projectCameraVertex(worldToCamera({x, y:-2.15, z: camera.z + 1}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x, y:-2.15, z: camera.z + 72}), HIGH_W, HIGH_H, HIGH_FOCAL);
+    drawCanvasLine(a, b, gridColor, 1);
+  }
+}
+function renderHighResWireframe() {
+  ctx.clearRect(0,0,HIGH_W,HIGH_H); ctx.fillStyle = BACKGROUND; ctx.fillRect(0,0,HIGH_W,HIGH_H);
+  drawHighResGrid();
+  for (const o of objects) {
+    if (o.collectible && !o.active) continue;
+    const { projectedVertices } = getProjectedObject(o, HIGH_W, HIGH_H, HIGH_FOCAL);
+    for (const edge of o.model.edges) {
+      const p1 = projectedVertices[edge[0]], p2 = projectedVertices[edge[1]];
+      if (p1 && p2) drawCanvasLine(p1, p2, o.color, o.collectible ? 5 : 3);
+    }
+  }
+  drawCrosshairHighRes();
+}
+function drawLowResGrid() {
+  const gridColor = "#1f5b68";
+  const startZ = Math.floor(camera.z / 4) * 4;
+  
+  // Horizontal lines
+  for (let z = startZ; z <= camera.z + 72; z += 4) {
+    const a = projectCameraVertex(worldToCamera({x:-11, y:-2.15, z}), LOW_W, LOW_H, LOW_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x: 11, y:-2.15, z}), LOW_W, LOW_H, LOW_FOCAL);
+    if (a && b) drawPixelLine(a.x, a.y, b.x, b.y, gridColor);
+  }
+  
+  // Vertical lines - Fixed: Start slightly ahead of camera to avoid clipping
+  for (let x = -10; x <= 10; x += 2) {
+    const a = projectCameraVertex(worldToCamera({x, y:-2.15, z: camera.z + 1}), LOW_W, LOW_H, LOW_FOCAL);
+    const b = projectCameraVertex(worldToCamera({x, y:-2.15, z: camera.z + 72}), LOW_W, LOW_H, LOW_FOCAL);
+    if (a && b) drawPixelLine(a.x, a.y, b.x, b.y, gridColor);
+  }
+}
+function renderPixelWireframe() {
+  clearPixelGrid();
+  drawLowResGrid();
+  for (const o of objects) {
+    if (o.collectible && !o.active) continue;
+    const { projectedVertices } = getProjectedObject(o, LOW_W, LOW_H, LOW_FOCAL);
+    for (const edge of o.model.edges) {
+      const p1 = projectedVertices[edge[0]], p2 = projectedVertices[edge[1]];
+      if (p1 && p2) drawPixelLine(p1.x, p1.y, p2.x, p2.y, o.color);
+    }
+  }
+  drawLowResCrosshair(); drawPixelGrid();
+}
+function drawPixelLine(x1, y1, x2, y2, color) {
+  const dx = x2 - x1, dy = y2 - y1, steps = Math.max(Math.abs(dx), Math.abs(dy));
+  if (steps === 0) { setPixelColor(x1, y1, color); return; }
+  const xStep = dx / steps, yStep = dy / steps;
+  let x = x1, y = y1;
+  for (let i = 0; i <= Math.ceil(steps); i++) { setPixelColor(x, y, color); x += xStep; y += yStep; }
+}
+function drawPixelGrid() {
+  ctx.clearRect(0, 0, HIGH_W, HIGH_H); ctx.fillStyle = BACKGROUND; ctx.fillRect(0, 0, HIGH_W, HIGH_H);
+  for (let y = 0; y < LOW_H; y++) {
+    for (let x = 0; x < LOW_W; x++) {
+      const color = pixelGrid[x][y];
+      if (color !== BACKGROUND) { ctx.fillStyle = color; ctx.fillRect(x * PIXEL_SIZE, y * PIXEL_SIZE, PIXEL_SIZE, PIXEL_SIZE); }
+    }
+  }
+}
+function renderFilledTriangles() {
+  clearPixelGrid(); clearDepthBuffer();
+  for (const o of objects) {
+    if (o.collectible && !o.active) continue;
+    const { projectedVertices } = getProjectedObject(o, LOW_W, LOW_H, LOW_FOCAL);
+    for (const tri of o.model.triangles) {
+      const a = projectedVertices[tri.i[0]], b = projectedVertices[tri.i[1]], c = projectedVertices[tri.i[2]];
+      if (a && b && c) rasterizeTriangle(a, b, c, shadeHex(o.color, tri.shade ?? 1));
+    }
+  }
+  drawLowResCrosshair(); drawPixelGrid();
+}
+function clearPixelGrid() { for (let x = 0; x < LOW_W; x++) pixelGrid[x].fill(BACKGROUND); }
+function setPixelColor(x, y, color) {
+  x = Math.round(x); y = Math.round(y);
+  if (x >= 0 && x < LOW_W && y >= 0 && y < LOW_H) pixelGrid[x][y] = color;
+}
+function drawLowResCrosshair() {
+  const cx = Math.floor(LOW_W/2), cy = Math.floor(LOW_H/2);
+  for (let d=-3; d<=3; d++) { setPixelColor(cx+d, cy, "#ffffff"); setPixelColor(cx, cy+d, "#ffffff"); }
+}
+function clearDepthBuffer() { for (let x = 0; x < LOW_W; x++) depthBuffer[x].fill(Infinity); }
+function edgeFunction(a, b, p) { return (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x); }
+function barycentric(p, a, b, c) {
+  const area = edgeFunction(a, b, c);
+  if (Math.abs(area) < 1e-8) return null;
+  const alpha = edgeFunction(b, c, p) / edgeFunction(b, c, a), beta = edgeFunction(c, a, p) / edgeFunction(c, a, b), gamma = 1 - alpha - beta;
+  return { alpha, beta, gamma };
+}
+function rasterizeTriangle(a, b, c, color) {
+  const minX = Math.max(0, Math.floor(Math.min(a.x, b.x, c.x))), maxX = Math.min(LOW_W - 1, Math.ceil(Math.max(a.x, b.x, c.x)));
+  const minY = Math.max(0, Math.floor(Math.min(a.y, b.y, c.y))), maxY = Math.min(LOW_H - 1, Math.ceil(Math.max(a.y, b.y, c.y)));
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const p = { x: x + 0.5, y: y + 0.5 }, bc = barycentric(p, a, b, c);
+      if (bc && bc.alpha >= -0.00001 && bc.beta >= -0.00001 && bc.gamma >= -0.00001) {
+        const z = bc.alpha * a.z + bc.beta * b.z + bc.gamma * c.z;
+        if (z < depthBuffer[x][y]) { depthBuffer[x][y] = z; pixelGrid[x][y] = color; }
+      }
+    }
+  }
+}
+function drawCrosshairHighRes() {
+  ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 2;
+  const cx = HIGH_W/2, cy = HIGH_H/2;
+  ctx.beginPath(); ctx.moveTo(cx-14, cy); ctx.lineTo(cx+14, cy); ctx.moveTo(cx, cy-14); ctx.lineTo(cx, cy+14); ctx.stroke();
+}
+// LOGIC
+function tryMove(dx, dz) {
+  if (gameOver) return;
+  const cx = Math.max(-10.5, Math.min(10.5, camera.x + dx)), cz = camera.z + dz;
+  let blocked = false;
+  for (const o of objects) {
+    if (!o.solid) continue;
+    const r = o.model.collisionRadius * o.scale + 0.5;
+    if (Math.hypot(cx - o.position.x, cz - o.position.z) < r) blocked = true;
+  }
+  if (!blocked) { camera.x = cx; camera.z = cz; }
+}
+function collectCrystal() {
+  if (gameOver) return;
+  let best = null, dist = Infinity;
+  for (const o of objects) {
+    if (!o.collectible || !o.active) continue;
+    const d = Math.hypot(o.position.x - camera.x, o.position.z - camera.z);
+    if (d < dist) { dist = d; best = o; }
+  }
+  if (best && dist <= 3.5) {
+    best.active = false;
+    oxygen = Math.min(100, oxygen + 25);
+    statusMessage = "Oxygen Refilled!";
+  }
+}
+function spawnCluster(z) {
+  const lanes = [-7, 0, 7];
+  for (let i = lanes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [lanes[i], lanes[j]] = [lanes[j], lanes[i]];
+  }
+  const difficulty = Math.min(3.5, 1 + z / 600);
+  const droneMinGap = Math.max(8, 35 - (z / 40));
+  const droneChance = Math.min(0.4, 0.15 + (z / 2000));
+  const fillCount = Math.random() > 0.4 ? 2 : 1;
+  for (let i = 0; i < fillCount; i++) {
+    const laneX = lanes[i] + (Math.random() - 0.5) * 3;
+    const type = Math.random();
+    
+    if (type < 0.35) {
+      objects.push({ model: cubeModel, position:{x: laneX, y:0, z}, scale:1.5 + Math.random()*0.5, color: CUBE_COLORS[Math.floor(Math.random()*CUBE_COLORS.length)], solid:true });
+    } else if (type < 0.65) {
+      objects.push({ model: pyramidModel, position:{x: laneX, y:-0.2, z}, scale:1.6 + Math.random()*0.6, color: PYRAMID_COLORS[Math.floor(Math.random()*PYRAMID_COLORS.length)], solid:true });
+    } else if (type < (0.65 + droneChance) && (z - lastDroneZ > droneMinGap)) {
+      const speed = 0.002 * difficulty;
+      objects.push({ model: droneModel, position:{x:0, y:0.5, z}, scale:1.3, color:"#ff3333", hazard:true, startX:laneX, range:5, speed: speed });
+      lastDroneZ = z;
+    } else {
+      objects.push({ model: crystalModel, position:{x: laneX, y:0.1, z}, scale:0.9, color:"#5ff6ff", collectible:true, active:true });
+    }
+  }
+}
+function updateHud() {
+  const difficulty = Math.min(3.5, 1 + camera.z / 600);
+  hud.innerHTML = `
+    <strong>OXYGEN SUPPLY</strong>
+    <div class="oxy-bar-container"><div id="oxy-fill" style="width:${oxygen}%"></div></div>
+    Distance: ${Math.floor(camera.z)}m<br>
+    <span class="diff-tag">Difficulty: ${difficulty.toFixed(1)}x</span>
+    <div id="message" class="${isHazard ? 'hazard-msg' : ''}">${statusMessage}</div>
+  `;
+}
+function animate(now) {
+  const dt = now - lastTime;
+  lastTime = now;
+  
+  if (!gameOver) {
+    time += dt;
+    oxygen -= dt * 0.0045;
+    if (droneCooldown > 0) droneCooldown -= dt;
+    if (camera.z > lastSpawnZ - 60) {
+      spawnCluster(lastSpawnZ);
+      lastSpawnZ += 10;
+    }
+    objects = objects.filter(o => o.position.z > camera.z - 10);
+    
+    for (const o of objects) {
+      if (o.hazard) {
+        o.position.x = o.startX + Math.sin(time * o.speed) * o.range;
+        if (Math.hypot(o.position.x - camera.x, o.position.z - camera.z) < 1.8 && droneCooldown <= 0) {
+          oxygen = Math.max(0, oxygen - 35);
+          statusMessage = "DRONE HIT! Oxygen Leak!";
+          isHazard = true; droneCooldown = 1500;
+        }
+      }
+    }
+    if (oxygen <= 0) { oxygen = 0; gameOver = true; statusMessage = "OXYGEN DEPLETED. Press R."; }
+    if (isHazard && droneCooldown <= 0) isHazard = false;
+  }
+  if (renderMode === 1) renderHighResWireframe();
+  else if (renderMode === 2) renderPixelWireframe();
+  else renderFilledTriangles();
+  
+  updateHud();
+  requestAnimationFrame(animate);
+}
+document.addEventListener("keydown", e => {
+  if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," "].includes(e.key)) e.preventDefault();
+  if (e.key === "ArrowLeft") tryMove(-0.7, 0);
+  if (e.key === "ArrowRight") tryMove(0.7, 0);
+  if (e.key === "ArrowUp") tryMove(0, 0.8);
+  if (e.key === "ArrowDown") tryMove(0, -0.8);
+  if (e.key === " ") collectCrystal();
+  if (e.key === "1") renderMode = 1;
+  if (e.key === "2") renderMode = 2;
+  if (e.key === "3") renderMode = 3;
+  if (e.key.toLowerCase() === "r") resetScene();
+});
+resetScene();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
