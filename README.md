@@ -24,16 +24,7 @@ An infinite procedural 3D retro raster runner built entirely with vanilla JavaSc
 
 ## How to Run
 
-Because this project is a standalone, single-file web application, you do not need to install any complex build tools, Node modules, or dependencies. 
-
 ### Method 1: Open Directly in Your Browser (Easiest)
 1. Save the code into a file named `game.html`.
 2. Double-click the `game.html` file, or drag and drop it into any modern web browser (Google Chrome, Firefox, Safari, Edge).
 
-### Method 2: Run via a Local Development Server (Recommended)
-Running through a local server prevents any potential browser restrictions with local file loading.
-
-1. Open your terminal or command prompt in the folder containing your `game.html` file.
-2. If you have **Node.js** installed, you can run:
-   ```bash
-   npx serve
